@@ -1,0 +1,8 @@
+build/
+.gradle/
+*.class
+*.iml
+.idea/
+local.properties
+native/cpp/test_core_san
+native/cpp/bench

@@ -1,0 +1,3 @@
+apply plugin: 'application'
+dependencies { implementation project(':core') }
+application { mainClass = 'com.herabarman.meshnet.sim.SimMain' }

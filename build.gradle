@@ -1,0 +1,16 @@
+plugins {
+    id 'com.android.application' version '9.1.1' apply false
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.2.21' apply false
+}
+
+configure(subprojects.findAll { it.name != 'app' }) {
+    apply plugin: 'java'
+    java {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+    dependencies {
+        testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    }
+    test { useJUnitPlatform() }
+}

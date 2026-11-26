@@ -1,0 +1,6 @@
+{
+  "name": "MeshNet",
+  "description": "P2P mesh networking engine, virtual-clock simulator, and live interactive topology dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

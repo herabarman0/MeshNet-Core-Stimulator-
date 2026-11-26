@@ -1,0 +1,16 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      # Plain javac + the offline JUnit stand-in: no downloads, same result on every machine.
+      - run: sh tools/build-and-test.sh
+      # The real Gradle/JUnit 5 build of the same sources.
+      - uses: gradle/actions/setup-gradle@v4
+      - run: gradle --no-daemon :core:test :sim:test :kit:build

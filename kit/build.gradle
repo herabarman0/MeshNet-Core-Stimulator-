@@ -1,0 +1,5 @@
+apply plugin: 'java-library'
+dependencies {
+    api project(':core')
+}
+// The kit's tests are plain main() programs (no JUnit), run by tools/build-and-test.sh
