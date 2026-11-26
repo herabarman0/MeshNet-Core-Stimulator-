@@ -5,6 +5,7 @@
 #include <sstream>
 #include <string>
 #include "mesh_core.hpp"
+#include "mesh_node.hpp"
 
 static int g_checks = 0, g_failures = 0;
 #define CHECK(cond)                                                              \
@@ -167,6 +168,47 @@ static void unit_tests() {
             Packet::decode(junk.empty() ? nullptr : junk.data(), junk.size(), p);  // result irrelevant, sanitizers watch
         }
         CHECK(true);
+    }
+    // Phase 2: ZoneRouter, Pacer, StoreAndForward, GatewayManager, ChunkAssembler
+    {
+        CHECK(ZoneRouter::ring_distance(1, 39, 40) == 2);
+        auto fingers = ZoneRouter::backbone_neighbors(0, 16, 0);
+        CHECK(fingers.count(1) == 1 && fingers.count(15) == 1 && fingers.count(8) == 1);
+
+        Pacer pacer(10.0, 10, 8);
+        Packet hi{}; hi.type = kData; hi.priority = 200; hi.msg_id = 1;
+        Packet lo{}; lo.type = kData; lo.priority = 50; lo.msg_id = 2;
+        for (int i = 0; i < 8; i++) CHECK(pacer.offer(lo, 0));
+        CHECK(!pacer.offer(lo, 0)); // hits bulk reserve
+        CHECK(pacer.offer(hi, 0));  // high priority uses reserved tokens
+
+        StoreAndForward sf(2);
+        Packet p1{}; p1.msg_id = 1; p1.priority = 1;
+        Packet p2{}; p2.msg_id = 2; p2.priority = 9;
+        CHECK(sf.enqueue(p1, 1000, 0));
+        CHECK(sf.enqueue(p2, 1000, 0));
+        auto taken = sf.take_all(10);
+        CHECK(taken.size() == 2 && taken[0].packet.msg_id == 2 && taken[1].packet.msg_id == 1);
+
+        GatewayManager gm;
+        std::vector<GatewayCandidate> cands = {
+            {1, 0.9, 0.8, true, false, true, 0},
+            {2, 0.1, 0.9, true, false, true, 0},
+            {3, 0.8, 0.7, false, false, true, 0}
+        };
+        auto gw = gm.reelect(cands, {2}, 1);
+        CHECK(gw.size() == 1 && gw[0] == 1);
+
+        ChunkAssembler ca(3);
+        const uint8_t c0[] = {'M', 'e'};
+        const uint8_t c1[] = {'s', 'h'};
+        const uint8_t c2[] = {'!'};
+        CHECK(ca.put(2, c2, 1));
+        CHECK(ca.put(0, c0, 2));
+        CHECK(!ca.complete());
+        CHECK(ca.put(1, c1, 2));
+        CHECK(ca.complete());
+        CHECK(ca.assemble() == std::vector<uint8_t>({'M', 'e', 's', 'h', '!'}));
     }
 }
 

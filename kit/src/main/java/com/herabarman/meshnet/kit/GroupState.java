@@ -32,21 +32,21 @@ import java.util.TreeSet;
  *    and anyone can post.
  * Not thread-safe. Engine thread only.
  */
-final class GroupState {
-    static final int MSG = 1, REACT = 2, ADD = 3, REMOVE = 4;
+public final class GroupState {
+    public static final int MSG = 1, REACT = 2, ADD = 3, REMOVE = 4;
     static final int MAX_PENDING = 300, MAX_OPS = 5000, MAX_TEXT = 1000;
 
-    interface Keys { byte[] keyOf(int node); }
+    public interface Keys { byte[] keyOf(int node); }
 
-    static final class Op {
-        final byte[] gid;
-        final int author, seq, mv, type;
-        final long ts;
-        final byte[] body;
-        final byte[] pub;       // open channels only
-        byte[] sig;
+    public static final class Op {
+        public final byte[] gid;
+        public final int author, seq, mv, type;
+        public final long ts;
+        public final byte[] body;
+        public final byte[] pub;       // open channels only
+        public byte[] sig;
 
-        Op(byte[] gid, int author, int seq, int mv, long ts, int type, byte[] body, byte[] pub) {
+        public Op(byte[] gid, int author, int seq, int mv, long ts, int type, byte[] body, byte[] pub) {
             this.gid = gid; this.author = author; this.seq = seq; this.mv = mv; this.ts = ts; this.type = type; this.body = body; this.pub = pub;
         }
 
@@ -59,12 +59,12 @@ final class GroupState {
             return b.array();
         }
 
-        byte[] encode() {
+        public byte[] encode() {
             byte[] s = signedBytes();
             return ByteBuffer.allocate(s.length + 1 + sig.length).put(s).put((byte) sig.length).put(sig).array();
         }
 
-        static Op decode(byte[] d) {
+        public static Op decode(byte[] d) {
             try {
                 ByteBuffer b = ByteBuffer.wrap(d);
                 byte[] gid = new byte[8];
@@ -86,15 +86,15 @@ final class GroupState {
             }
         }
 
-        String key() { return author + ":" + seq; }
+        public String key() { return author + ":" + seq; }
     }
 
-    static final class Msg {
-        final String key;
-        final int author;
-        final long ts;
-        final String text;
-        Msg(String key, int author, long ts, String text) { this.key = key; this.author = author; this.ts = ts; this.text = text; }
+    public static final class Msg {
+        public final String key;
+        public final int author;
+        public final long ts;
+        public final String text;
+        public Msg(String key, int author, long ts, String text) { this.key = key; this.author = author; this.ts = ts; this.text = text; }
     }
 
     private static final class React {
@@ -115,12 +115,12 @@ final class GroupState {
     private final Map<String, Msg> msgs = new HashMap<>();
     private final Map<String, React> reacts = new HashMap<>();   // "msgKey|emoji|reactor"
 
-    GroupState(byte[] gid, boolean open, int founder, Keys keys) {
+    public GroupState(byte[] gid, boolean open, int founder, Keys keys) {
         this.gid = gid; this.open = open; this.founder = founder; this.keys = keys;
         if (!open) members.add(founder);
     }
 
-    static int authorOf(byte[] pub) {
+    public static int authorOf(byte[] pub) {
         try {
             byte[] d = MessageDigest.getInstance("SHA-256").digest(pub);
             return ((d[0] & 0x7F) << 24) | ((d[1] & 0xFF) << 16) | ((d[2] & 0xFF) << 8) | (d[3] & 0xFF);
@@ -133,7 +133,7 @@ final class GroupState {
 
     // ------------------------------------------------------------------ creating ops (for local authors)
 
-    Op create(IdentityKeys me, int meNode, int type, long ts, byte[] body) {
+    public Op create(IdentityKeys me, int meNode, int type, long ts, byte[] body) {
         int author = open ? authorOf(me.publicRaw()) : meNode;
         int seq = size(author) + 1;
         Op op = new Op(gid, author, seq, open ? 0 : size(founder), ts, type, body, open ? me.publicRaw() : null);
@@ -141,12 +141,12 @@ final class GroupState {
         return op;
     }
 
-    int size(int author) { List<Op> l = logs.get(author); return l == null ? 0 : l.size(); }
+    public int size(int author) { List<Op> l = logs.get(author); return l == null ? 0 : l.size(); }
 
     // ------------------------------------------------------------------ ingesting
 
     /** @return the ops that became part of the state because of this call (the op itself and any it unblocked) */
-    List<Op> ingest(Op op) {
+    public List<Op> ingest(Op op) {
         List<Op> accepted = new ArrayList<>();
         if (!Arrays.equals(op.gid, gid) || op.body.length > 2 * MAX_TEXT + 100) return accepted;
         int r = tryApply(op, accepted);
@@ -241,11 +241,11 @@ final class GroupState {
 
     // ------------------------------------------------------------------ reading
 
-    Set<Integer> members() { return Collections.unmodifiableSet(members); }
+    public Set<Integer> members() { return Collections.unmodifiableSet(members); }
 
-    boolean isMember(int node) { return open || members.contains(node); }
+    public boolean isMember(int node) { return open || members.contains(node); }
 
-    List<Msg> history() {
+    public List<Msg> history() {
         List<Msg> l = new ArrayList<>(msgs.values());
         Collections.sort(l, new Comparator<Msg>() {
             @Override public int compare(Msg a, Msg b) {
@@ -258,7 +258,7 @@ final class GroupState {
     }
 
     /** emoji -> set of reactors currently "on" for one message key ("author:seq") */
-    Map<String, Set<Integer>> reactionsOf(String msgKey) {
+    public Map<String, Set<Integer>> reactionsOf(String msgKey) {
         Map<String, Set<Integer>> out = new TreeMap<>();
         for (Map.Entry<String, React> e : reacts.entrySet()) {
             String[] p = e.getKey().split("\\|", 3);
@@ -271,14 +271,14 @@ final class GroupState {
     }
 
     /** vector: author -> highest contiguous seq I have */
-    Map<Integer, Integer> vector() {
+    public Map<Integer, Integer> vector() {
         Map<Integer, Integer> v = new TreeMap<>();
         for (Map.Entry<Integer, List<Op>> e : logs.entrySet()) v.put(e.getKey(), e.getValue().size());
         return v;
     }
 
     /** ops that a peer with this vector lacks, oldest first, at most `max` */
-    List<Op> missingFor(Map<Integer, Integer> theirs, int max) {
+    public List<Op> missingFor(Map<Integer, Integer> theirs, int max) {
         List<Op> out = new ArrayList<>();
         for (Map.Entry<Integer, List<Op>> e : logs.entrySet()) {
             Integer t = theirs.get(e.getKey());
@@ -287,13 +287,13 @@ final class GroupState {
         return out;
     }
 
-    boolean behind(Map<Integer, Integer> theirs) {
+    public boolean behind(Map<Integer, Integer> theirs) {
         for (Map.Entry<Integer, Integer> e : theirs.entrySet()) if (e.getValue() > size(e.getKey())) return true;
         return false;
     }
 
     /** Canonical text of everything visible: identical on every converged replica. */
-    String snapshot() {
+    public String snapshot() {
         StringBuilder sb = new StringBuilder();
         sb.append("members=").append(members).append('\n');
         for (Msg m : history()) {
@@ -302,5 +302,5 @@ final class GroupState {
         return sb.toString();
     }
 
-    int pendingCount() { return pending.size(); }
+    public int pendingCount() { return pending.size(); }
 }

@@ -1,0 +1,14 @@
+[package]
+name = "meshnet-core"
+version = "0.2.0"
+edition = "2021"
+description = "Memory-safe Rust implementation of the MeshNet wire format, caches, zone router, pacer, and C FFI ABI."
+license = "MIT"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[features]
+default = ["std"]
+std = []
+wasm = []

@@ -93,7 +93,7 @@ public final class Alerts {
 
     // ------------------------------------------------------------------ wire
 
-    static byte[] encode(IdentityKeys key, long id, int type, long expiryMs, String area, double lat, double lon, String text, int ttl) {
+    public static byte[] encode(IdentityKeys key, long id, int type, long expiryMs, String area, double lat, double lon, String text, int ttl) {
         byte[] a = area.getBytes(StandardCharsets.US_ASCII);
         byte[] t = text.getBytes(StandardCharsets.UTF_8);
         if (a.length > 12 || t.length > MAX_TEXT) throw new IllegalArgumentException("area <= 12 chars, text <= 100 bytes");
@@ -106,6 +106,16 @@ public final class Alerts {
         ByteBuffer o = ByteBuffer.allocate(signed.length + 1 + sig.length + 1);
         o.put(signed).put((byte) sig.length).put(sig).put((byte) ttl);
         return o.array();
+    }
+
+    public static Alert decodeVerified(byte[] wire, List<byte[]> trustedAuthorities) {
+        Parsed p = parse(wire);
+        if (p == null || !IdentityKeys.verify(p.pub, p.signed, p.sig)) return null;
+        boolean official = false;
+        if (trustedAuthorities != null) {
+            for (byte[] k : trustedAuthorities) if (Arrays.equals(k, p.pub)) { official = true; break; }
+        }
+        return new Alert(p.id, p.type, official, IdentityKeys.fingerprint(p.pub), p.expiryMs, p.area, p.lat, p.lon, p.text);
     }
 
     private static Parsed parse(byte[] d) {

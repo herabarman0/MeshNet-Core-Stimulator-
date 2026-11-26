@@ -21,7 +21,9 @@ import java.util.Random;
 final class DtnBrain {
     static final int N = 9;
     private final double[] w = {-1.0, 3.0, 2.0, 1.5, 0.5, 0.3, 0.3, 0.2, -0.5};
-    private double lr = 0.05;
+    private final double[] vel = new double[N];
+    private double wInteract = 0.65; // ReLU interaction: neighbor predictability x reliability
+    private double lr = 0.06;
     private double eps = 0.10;
     private final Random rnd;
     long updates;
@@ -31,6 +33,8 @@ final class DtnBrain {
     double predict(double[] x) {
         double z = 0;
         for (int i = 0; i < N; i++) z += w[i] * x[i];
+        double inter = x[1] * x[3];
+        if (inter > 0) z += wInteract * inter;
         return 1.0 / (1.0 + Math.exp(-z));
     }
 
@@ -40,10 +44,15 @@ final class DtnBrain {
     void learn(double[] x, double y) {
         double err = y - predict(x);
         for (int i = 0; i < N; i++) {
-            w[i] += lr * err * x[i] - lr * 0.001 * w[i];
-            w[i] = Math.max(-8, Math.min(8, w[i]));
+            double grad = err * x[i] - 0.001 * w[i];
+            vel[i] = 0.75 * vel[i] + lr * grad;
+            w[i] = Math.max(-8, Math.min(8, w[i] + vel[i]));
         }
-        eps = Math.max(0.02, eps * 0.995);
+        double inter = x[1] * x[3];
+        if (inter > 0) {
+            wInteract = Math.max(-4, Math.min(4, wInteract + lr * 0.5 * err * inter));
+        }
+        eps = Math.max(0.02, eps * 0.992);
         updates++;
     }
 

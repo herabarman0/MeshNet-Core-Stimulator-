@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">MeshNet</string>
+    <string name="tab_live_mesh">মেশ লাইভ</string>
+    <string name="tab_mesh_hub">সুপার হাব</string>
+    <string name="tab_engine_lab">ইঞ্জিন ল্যাব</string>
+    <string name="tab_multiplatform">প্ল্যাটফর্ম</string>
 </resources>

@@ -71,4 +71,163 @@ public final class PathSelector {
         }
         return paths.get(pick).nextHop;
     }
+
+    public static final class PathDecision {
+        public final int nextHop;
+        public final double totalCost;
+        public final double energyPenalty;
+        public final double aiReliability;
+        public final boolean avoidedLowBattery;
+
+        PathDecision(int nextHop, double totalCost, double energyPenalty, double aiReliability, boolean avoidedLowBattery) {
+            this.nextHop = nextHop;
+            this.totalCost = totalCost;
+            this.energyPenalty = energyPenalty;
+            this.aiReliability = aiReliability;
+            this.avoidedLowBattery = avoidedLowBattery;
+        }
+    }
+
+    /**
+     * Enhanced Energy-Aware + AI Predictive + Fairness Path Selection:
+     * Strongly spares nodes below cfg.lowBattery when healthier relays exist, rewards charging relays,
+     * and scales path desirability by PredictiveAiRouter reliability & RelayFairnessLedger credit score.
+     */
+    public static PathDecision chooseSmart(
+            List<MultiRouteTable.Path> paths,
+            Lookup neighbors,
+            MeshConfig cfg,
+            PredictiveAiRouter aiRouter,
+            RelayFairnessLedger fairness,
+            int dstNode,
+            long nowMs) {
+        if (paths.isEmpty()) return new PathDecision(-1, Double.MAX_VALUE, 1.0, 0.0, false);
+
+        boolean hasHealthyAlt = false;
+        for (MultiRouteTable.Path p : paths) {
+            NeighborInfo n = neighbors.get(p.nextHop);
+            if (n == null || n.charging || n.battery >= cfg.lowBattery) {
+                hasHealthyAlt = true;
+                break;
+            }
+        }
+
+        boolean sawLowBatt = false;
+        int bestHop = -1;
+        double bestCost = Double.MAX_VALUE;
+        double bestEnergy = 1.0;
+        double bestAi = 0.5;
+        int predictedDstZone = aiRouter == null ? -1 : aiRouter.predictNextZone(dstNode);
+
+        for (MultiRouteTable.Path p : paths) {
+            NeighborInfo n = neighbors.get(p.nextHop);
+            double eFactor = 1.0;
+            if (n != null && cfg.energyAware) {
+                eFactor = energyFactor(n.battery, n.charging, cfg);
+                if (!n.charging && n.battery < cfg.lowBattery) {
+                    sawLowBatt = true;
+                    if (hasHealthyAlt) eFactor *= 6.0; // spare critical-battery relay so network lives longer
+                }
+            }
+            double base = firstHopCost(n, cfg, nowMs);
+            if (n != null && !n.charging && n.battery < cfg.lowBattery && hasHealthyAlt) {
+                base *= 6.0;
+            }
+            double fair = fairness == null ? 0.6 : fairness.fairnessScore(p.nextHop);
+            double aiRel = 0.65;
+            if (aiRouter != null) {
+                double online = aiRouter.onlineLikelihood(p.nextHop, nowMs);
+                double dstOnline = aiRouter.onlineLikelihood(dstNode, nowMs);
+                int relayZone = aiRouter.currentZone(p.nextHop);
+                double zoneMatch = (predictedDstZone >= 0 && relayZone == predictedDstZone) ? 1.0 : 0.3;
+                double linkQ = n == null ? 0.85 : Math.min(1.0, n.successRate() / Math.max(1.0, n.etx()));
+                double batt = n == null ? 0.80 : Math.max(0.0, Math.min(1.0, n.battery));
+                double chg = (n != null && n.charging) ? 1.0 : 0.0;
+                double loadMargin = n == null ? 0.80 : Math.max(0.0, 1.0 - Math.min(1.0, n.load));
+                aiRel = aiRouter.scoreCandidate(new double[]{
+                    1.0, online, Math.max(0.0, online - 0.3), dstOnline,
+                    zoneMatch, fair, linkQ, batt, chg, loadMargin, 0.75, 0.1
+                });
+            }
+            double total = Math.max(0, p.hops - 1) + (base / (0.4 + 0.6 * aiRel)) * (1.25 - 0.4 * fair);
+            if (total < bestCost) {
+                bestCost = total;
+                bestHop = p.nextHop;
+                bestEnergy = eFactor;
+                bestAi = aiRel;
+            }
+        }
+        NeighborInfo chosenInfo = neighbors.get(bestHop);
+        boolean avoided = sawLowBatt && (chosenInfo == null || chosenInfo.charging || chosenInfo.battery >= cfg.lowBattery);
+        return new PathDecision(bestHop, bestCost, bestEnergy, bestAi, avoided);
+    }
+
+    public static final class AdaptiveLinkReport {
+        public final int nextHop;
+        public final double rssiDbm;
+        public final double rttMs;
+        public final double packetLossPct;
+        public final double batmanTq;
+        public final double compositeScore;
+
+        AdaptiveLinkReport(int nextHop, double rssiDbm, double rttMs, double packetLossPct, double batmanTq, double compositeScore) {
+            this.nextHop = nextHop;
+            this.rssiDbm = rssiDbm;
+            this.rttMs = rttMs;
+            this.packetLossPct = packetLossPct;
+            this.batmanTq = batmanTq;
+            this.compositeScore = compositeScore;
+        }
+    }
+
+    /**
+     * AOMDV + B.A.T.M.A.N. TQ Adaptive Path Selector combining:
+     *   - Radio RSSI + fading slope prediction
+     *   - End-to-end RTT latency penalty
+     *   - Measured beacon/packet loss rate (TQ = receiveQuality * successRate)
+     *   - Multi-path hop count + energy awareness
+     */
+    public static AdaptiveLinkReport chooseAdaptiveBatmanAomdv(
+            List<MultiRouteTable.Path> paths,
+            Lookup neighbors,
+            MeshConfig cfg,
+            long nowMs) {
+        if (paths == null || paths.isEmpty()) {
+            return new AdaptiveLinkReport(-1, Double.NaN, Double.NaN, 100.0, 0.0, 0.0);
+        }
+        int bestHop = paths.get(0).nextHop;
+        double bestScore = -1.0;
+        double bestRssi = -60.0;
+        double bestRtt = 25.0;
+        double bestLoss = 0.0;
+        double bestTq = 0.9;
+
+        for (MultiRouteTable.Path p : paths) {
+            NeighborInfo n = neighbors.get(p.nextHop);
+            double rssiQ = n == null ? 0.85 : n.rssiQuality();
+            double rssiVal = (n != null && n.hasRssi()) ? n.rssiDbm() : -62.0;
+            double rtt = (n != null && !Double.isNaN(n.rttMs())) ? n.rttMs() : 30.0;
+            double recvQ = n == null ? 0.90 : n.receiveQuality();
+            double succ = n == null ? 0.90 : n.successRate();
+            double tq = recvQ * succ;
+            double lossPct = Math.max(0.0, Math.min(100.0, (1.0 - tq) * 100.0));
+            double latencyFactor = 1.0 / (1.0 + Math.max(0.0, rtt) / 120.0);
+            double hopFactor = 1.0 / (1.0 + Math.max(0, p.hops - 1) * 0.45);
+            double energyPenalty = (n != null && cfg.energyAware) ? energyFactor(n.battery, n.charging, cfg) : 1.0;
+            double fadePenalty = (n != null && n.expiring(cfg.linkExpiryHorizonMs)) ? 0.45 : 1.0;
+            double badPenalty = (n != null && n.recentlyBad(nowMs, 30_000L)) ? 0.35 : 1.0;
+
+            double score = (0.42 * tq + 0.33 * rssiQ + 0.25 * latencyFactor)
+                    * hopFactor * fadePenalty * badPenalty / Math.sqrt(energyPenalty);
+            if (score > bestScore) {
+                bestScore = score;
+                bestHop = p.nextHop;
+                bestRssi = rssiVal;
+                bestRtt = rtt;
+                bestLoss = lossPct;
+                bestTq = tq;
+            }
+        }
+        return new AdaptiveLinkReport(bestHop, bestRssi, bestRtt, bestLoss, bestTq, bestScore);
+    }
 }

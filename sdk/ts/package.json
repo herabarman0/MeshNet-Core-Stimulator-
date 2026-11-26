@@ -1,0 +1,19 @@
+{
+  "name": "@herabarman/meshnet-sdk",
+  "version": "0.2.0",
+  "description": "Zero-dependency TypeScript/ESM MeshNet SDK for Browser, Node.js, React Native, and Electron.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/conformance.test.mjs"
+  },
+  "license": "MIT"
+}

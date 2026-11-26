@@ -21,12 +21,14 @@ public final class StoreAndForward {
     public static final class Item {
         public final Packet packet;
         public final long expiresAtMs;
+        final long createdAtMs;
         private final long seq;
         private final String key; // null when not persistent
 
-        Item(Packet packet, long expiresAtMs, long seq, String key) {
+        Item(Packet packet, long expiresAtMs, long createdAtMs, long seq, String key) {
             this.packet = packet;
             this.expiresAtMs = expiresAtMs;
+            this.createdAtMs = createdAtMs;
             this.seq = seq;
             this.key = key;
         }
@@ -34,18 +36,25 @@ public final class StoreAndForward {
 
     private final int maxItems;
     private final StorageAdapter storage;
+    private final long agingStepMs;
     private final List<Item> items = new ArrayList<>();
     private long seq;
     private int expired;
     private int evicted;
 
     public StoreAndForward(int maxItems) {
-        this(maxItems, null);
+        this(maxItems, null, 0L);
     }
 
     public StoreAndForward(int maxItems, StorageAdapter storage) {
+        this(maxItems, storage, 0L);
+    }
+
+    /** @param agingStepMs >0 boosts non-SOS effective priority by +1 per step to prevent starvation */
+    public StoreAndForward(int maxItems, StorageAdapter storage, long agingStepMs) {
         this.maxItems = maxItems;
         this.storage = storage;
+        this.agingStepMs = Math.max(0L, agingStepMs);
     }
 
     /** Load packets left on disk by an earlier run. @return how many were restored */
@@ -67,7 +76,7 @@ public final class StoreAndForward {
                     storage.remove(key);
                     expired++;
                 } else {
-                    items.add(new Item(p, expiresAt, s, key));
+                    items.add(new Item(p, expiresAt, nowMs, s, key));
                     restored++;
                 }
             } catch (IllegalArgumentException e) {
@@ -106,19 +115,27 @@ public final class StoreAndForward {
             byte[] pk = p.encode();
             storage.put(key, ByteBuffer.allocate(8 + pk.length).putLong(expiresAtMs).put(pk).array());
         }
-        items.add(new Item(p, expiresAtMs, s, key));
+        items.add(new Item(p, expiresAtMs, nowMs, s, key));
         return true;
     }
 
+    private int effectivePriority(Item item, long nowMs) {
+        int base = item.packet.priority;
+        if (agingStepMs <= 0 || base >= Priority.SOS) return base;
+        long age = Math.max(0L, nowMs - item.createdAtMs);
+        int boost = (int) Math.min(32L, age / agingStepMs);
+        return Math.min(Priority.SOS - 1, base + boost);
+    }
+
     /** Remove and return all live items, highest priority first, then oldest first. Call done() or requeue() for each. */
-    public List<Item> takeAll(long nowMs) {
+    public List<Item> takeAll(final long nowMs) {
         purge(nowMs);
         List<Item> out = new ArrayList<>(items);
         items.clear();
         Collections.sort(out, new Comparator<Item>() {
             @Override
             public int compare(Item a, Item b) {
-                int c = Integer.compare(b.packet.priority, a.packet.priority);
+                int c = Integer.compare(effectivePriority(b, nowMs), effectivePriority(a, nowMs));
                 return c != 0 ? c : Long.compare(a.seq, b.seq);
             }
         });

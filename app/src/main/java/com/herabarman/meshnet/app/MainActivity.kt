@@ -1,150 +1,57 @@
 package com.herabarman.meshnet.app
 
-import android.annotation.SuppressLint
-import android.net.Uri
 import android.os.Bundle
-import android.view.ViewGroup
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.ViewModel
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.herabarman.meshnet.dashboard.DashboardSim
-import java.io.ByteArrayInputStream
-import java.nio.charset.StandardCharsets
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
-
-class MeshDashboardViewModel : ViewModel() {
-    private val ticker: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
-    private val simFuture: CompletableFuture<DashboardSim> = CompletableFuture()
-
-    init {
-        ticker.execute {
-            try {
-                simFuture.complete(DashboardSim())
-            } catch (t: Throwable) {
-                simFuture.completeExceptionally(t)
-            }
-        }
-        ticker.scheduleAtFixedRate(
-            {
-                try {
-                    if (simFuture.isDone && !simFuture.isCompletedExceptionally) {
-                        simFuture.get().tick(50)
-                    }
-                } catch (e: RuntimeException) {
-                    e.printStackTrace()
-                }
-            },
-            50,
-            50,
-            TimeUnit.MILLISECONDS
-        )
-    }
-
-    fun handleRequest(uri: Uri): WebResourceResponse? {
-        if (uri.host != "meshnet.local") return null
-        val path = uri.path ?: "/"
-        if (path == "/" || path == "/index.html") {
-            val stream = DashboardSim::class.java.getResourceAsStream("/index.html")
-                ?: return WebResourceResponse(
-                    "text/plain",
-                    "utf-8",
-                    404,
-                    "Not Found",
-                    mapOf("Cache-Control" to "no-store"),
-                    ByteArrayInputStream("index.html not found".toByteArray(StandardCharsets.UTF_8))
-                )
-            return WebResourceResponse(
-                "text/html",
-                "utf-8",
-                200,
-                "OK",
-                mapOf("Cache-Control" to "no-store"),
-                stream
-            )
-        }
-        if (path.startsWith("/api/")) {
-            val sim = simFuture.get()
-            val query = HashMap<String, String>()
-            for (name in uri.queryParameterNames) {
-                query[name] = uri.getQueryParameter(name) ?: ""
-            }
-            val json = try {
-                when (path) {
-                    "/api/state" -> sim.state(
-                        query["since"]?.toLongOrNull() ?: 0L,
-                        query["a"]?.toIntOrNull() ?: -1,
-                        query["b"]?.toIntOrNull() ?: -1
-                    )
-                    "/api/send" -> sim.send(
-                        query["mode"] ?: "remote",
-                        query["src"]?.toIntOrNull() ?: -1,
-                        query["dst"]?.toIntOrNull() ?: -1
-                    )
-                    "/api/kill" -> {
-                        sim.kill(query["id"]?.toIntOrNull() ?: -1)
-                        "{\"ok\":true}"
-                    }
-                    "/api/revive" -> {
-                        sim.revive(query["id"]?.toIntOrNull() ?: -1)
-                        "{\"ok\":true}"
-                    }
-                    "/api/killgw" -> {
-                        sim.killGateways(query["zone"]?.toIntOrNull() ?: -1)
-                        "{\"ok\":true}"
-                    }
-                    "/api/config" -> {
-                        sim.configure(query)
-                        "{\"ok\":true}"
-                    }
-                    else -> "{\"ok\":false}"
-                }
-            } catch (_: RuntimeException) {
-                "{\"ok\":false}"
-            }
-            return WebResourceResponse(
-                "application/json",
-                "utf-8",
-                200,
-                "OK",
-                mapOf("Cache-Control" to "no-store"),
-                ByteArrayInputStream(json.toByteArray(StandardCharsets.UTF_8))
-            )
-        }
-        return null
-    }
-
-    override fun onCleared() {
-        ticker.shutdownNow()
-        super.onCleared()
-    }
-}
+import com.herabarman.meshnet.app.ui.EngineLabTab
+import com.herabarman.meshnet.app.ui.LiveMeshTab
+import com.herabarman.meshnet.app.ui.MeshHubTab
+import com.herabarman.meshnet.app.ui.MultiPlatformTab
+import com.herabarman.meshnet.app.ui.theme.MeshBg
+import com.herabarman.meshnet.app.ui.theme.MeshMint
+import com.herabarman.meshnet.app.ui.theme.MeshNetTheme
+import com.herabarman.meshnet.app.ui.theme.MeshPanel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -155,74 +62,110 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             MeshNetTheme {
-                MeshDashboardScreen()
+                MeshAppShell()
             }
         }
     }
 }
 
-private val MeshColorScheme = darkColorScheme(
-    primary = Color(0xFF00E5A0),
-    background = Color(0xFF0B0F17),
-    surface = Color(0xFF121927),
-    onBackground = Color(0xFFE6E9EF),
-    onSurface = Color(0xFFE6E9EF)
+private data class NavTab(
+    val titleRes: Int,
+    val selectedIcon: ImageVector,
+    val unselectedIcon: ImageVector,
+    val tag: String
+)
+
+private val NAV_TABS = listOf(
+    NavTab(R.string.tab_live_mesh, Icons.Rounded.Share, Icons.Outlined.Share, "nav_live_mesh"),
+    NavTab(R.string.tab_mesh_hub, Icons.Rounded.Star, Icons.Outlined.Star, "nav_mesh_hub"),
+    NavTab(R.string.tab_engine_lab, Icons.Rounded.Build, Icons.Outlined.Build, "nav_engine_lab"),
+    NavTab(R.string.tab_multiplatform, Icons.Rounded.Info, Icons.Outlined.Info, "nav_multiplatform")
 )
 
 @Composable
-private fun MeshNetTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = MeshColorScheme,
-        content = content
-    )
-}
-
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-private fun MeshDashboardScreen(
+private fun MeshAppShell(
     vm: MeshDashboardViewModel = viewModel()
 ) {
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
-    BackHandler(enabled = webViewRef?.canGoBack() == true) {
-        webViewRef?.goBack()
-    }
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets.safeDrawing
-    ) { innerPadding ->
-        AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .testTag("mesh_dashboard_webview"),
-            factory = { context ->
-                WebView(context).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    setBackgroundColor(0xFF0B0F17.toInt())
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.useWideViewPort = true
-                    settings.loadWithOverviewMode = true
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldInterceptRequest(
-                            view: WebView?,
-                            request: WebResourceRequest?
-                        ): WebResourceResponse? {
-                            val url = request?.url ?: return null
-                            return vm.handleRequest(url) ?: super.shouldInterceptRequest(view, request)
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useRail = maxWidth >= 840.dp
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = MeshBg,
+            contentWindowInsets = WindowInsets.safeDrawing,
+            bottomBar = {
+                if (!useRail) {
+                    NavigationBar(
+                        containerColor = MeshPanel,
+                        windowInsets = WindowInsets.navigationBars
+                    ) {
+                        NAV_TABS.forEachIndexed { idx, tab ->
+                            val selected = selectedTab == idx
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = { selectedTab = idx },
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                        contentDescription = stringResource(tab.titleRes)
+                                    )
+                                },
+                                label = { Text(stringResource(tab.titleRes)) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = Color(0xFF04110C),
+                                    selectedTextColor = MeshMint,
+                                    indicatorColor = MeshMint,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                modifier = Modifier.testTag(tab.tag)
+                            )
                         }
                     }
-                    loadUrl("https://meshnet.local/index.html")
-                    webViewRef = this
                 }
-            },
-            update = { webViewRef = it }
-        )
+            }
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                if (useRail) {
+                    NavigationRail(containerColor = MeshPanel) {
+                        NAV_TABS.forEachIndexed { idx, tab ->
+                            val selected = selectedTab == idx
+                            NavigationRailItem(
+                                selected = selected,
+                                onClick = { selectedTab = idx },
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                        contentDescription = stringResource(tab.titleRes)
+                                    )
+                                },
+                                label = { Text(stringResource(tab.titleRes)) },
+                                colors = NavigationRailItemDefaults.colors(
+                                    selectedIconColor = Color(0xFF04110C),
+                                    selectedTextColor = MeshMint,
+                                    indicatorColor = MeshMint,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                modifier = Modifier.testTag(tab.tag)
+                            )
+                        }
+                    }
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                    when (selectedTab) {
+                        0 -> LiveMeshTab(vm = vm)
+                        1 -> MeshHubTab(vm = vm)
+                        2 -> EngineLabTab(vm = vm)
+                        else -> MultiPlatformTab(vm = vm)
+                    }
+                }
+            }
+        }
     }
 }

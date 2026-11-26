@@ -18,7 +18,7 @@ public final class MultiRouteTable {
         public long expiresAtMs;
         public long learnedAtMs;
 
-        Path(int nextHop, int hops, long learnedAtMs, long expiresAtMs) {
+        public Path(int nextHop, int hops, long learnedAtMs, long expiresAtMs) {
             this.nextHop = nextHop;
             this.hops = hops;
             this.learnedAtMs = learnedAtMs;
