@@ -116,6 +116,8 @@ class MeshDashboardViewModel(application: Application) : AndroidViewModel(applic
     val resilienceState: StateFlow<MeshResilienceUiState> = resilience.state
     val worldClass = MeshWorldClassEngine(hub.multiRadio)
     val worldClassState: StateFlow<WorldClassUiState> = worldClass.state
+    val services = MeshServicesEngine(application)
+    val servicesState: StateFlow<MeshServicesUiState> = services.state
 
     @Volatile
     private var selA: Int = -1
@@ -784,6 +786,48 @@ class MeshDashboardViewModel(application: Application) : AndroidViewModel(applic
         viewModelScope.launch(Dispatchers.Default) {
             worldClass.runNativeCoreBenchmark()
         }
+    }
+
+    // ---- LostPhone, Photo Compressor, QR ContactCard & Gateway Actions ----
+
+    fun toggleLostPhoneArm(arm: Boolean) {
+        viewModelScope.launch(Dispatchers.Default) { services.toggleLostArm(arm) }
+    }
+
+    fun regenerateLostSecret(seedPhrase: String) {
+        viewModelScope.launch(Dispatchers.Default) { services.regenerateDerivedSecret(seedPhrase) }
+    }
+
+    fun triggerLastGaspAndSighting() {
+        viewModelScope.launch(Dispatchers.Default) { services.triggerLastGaspAndNeighborSighting() }
+    }
+
+    fun sendLostRemoteCommand(cmdCode: Int) {
+        viewModelScope.launch(Dispatchers.Default) { services.sendSignedLostCommand(cmdCode) }
+    }
+
+    fun simulateAntiStalking() {
+        viewModelScope.launch(Dispatchers.Default) { services.simulateUnfamiliarStalkerBeacons() }
+    }
+
+    fun compressPhotoUri(uri: Uri) {
+        viewModelScope.launch(Dispatchers.Default) { services.compressPickedPhoto(uri) }
+    }
+
+    fun compressSyntheticPhoto() {
+        viewModelScope.launch(Dispatchers.Default) { services.compressSynthetic4kSample() }
+    }
+
+    fun verifyContactUri(uri: String) {
+        viewModelScope.launch(Dispatchers.Default) { services.verifyContactCardUri(uri) }
+    }
+
+    fun revokePeerContactKey() {
+        viewModelScope.launch(Dispatchers.Default) { services.revokePeerKey() }
+    }
+
+    fun updateGatewayPolicy(batteryPct: Int, allowGateway: Boolean) {
+        viewModelScope.launch(Dispatchers.Default) { services.updateBatteryAndGateway(batteryPct, manualGatewayToggle = allowGateway) }
     }
 
     override fun onCleared() {

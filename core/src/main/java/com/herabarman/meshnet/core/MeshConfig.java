@@ -223,4 +223,41 @@ public final class MeshConfig {
     public long linkExpiryHorizonMs = 8_000;
     /** How long a forwarding pointer ("X moved from zone A to zone B") lives. */
     public long pointerTtlMs = 60_000;
+
+    // ---- advanced engine pipeline (opt-in flags so legacy protocols stay wire-compatible) ----
+    /** Consult PredictiveAiRouter when choosing relay paths and update it on ACK/timeout outcomes. */
+    public boolean predictiveAiRouting = false;
+    /** Compress payloads with LZ4 (compress-then-encrypt) before encryption when payload >= 16 bytes. */
+    public boolean compressPayloads = false;
+    /** Enforce Hashcash PoW on HELLO beacons + trust-weighted per-peer flood rate limiting via SybilGuard. */
+    public boolean sybilGuardEnabled = false;
+    public int sybilPowBits = 6;
+    public double sybilBurst = 24.0;
+    public double sybilRefillPerSec = 8.0;
+    /** Coalesce small outbound frames into multi-frame 5-lane priority bursts via TurboScheduler. */
+    public boolean turboCoalescing = false;
+    public int turboMtuBytes = 4096;
+    public long turboFlushMs = 5;
+    /** Wrap wire bytes in TLS 1.3 Application Data mimicry via TrafficMasker (defeats DPI). */
+    public boolean trafficMasking = false;
+    public byte[] trafficMaskKey = null;
+    /** Require signed directory records in GossipDirectory / DHT when a RecordGuard is present. */
+    public boolean requireSignedGossip = false;
+
+    /** Convenience preset enabling the full resilience, AI routing, compression, and anti-Sybil stack. */
+    public static MeshConfig worldClassDefaults() {
+        MeshConfig c = new MeshConfig();
+        c.discovery = true;
+        c.adaptiveRouting = true;
+        c.energyAware = true;
+        c.congestionControl = true;
+        c.mobilityAware = true;
+        c.predictiveAiRouting = true;
+        c.compressPayloads = true;
+        c.sybilGuardEnabled = true;
+        c.turboCoalescing = true;
+        c.requireSignedGossip = true;
+        c.beaconMs = 15_000;
+        return c;
+    }
 }

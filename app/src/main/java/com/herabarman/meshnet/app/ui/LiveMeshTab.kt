@@ -39,6 +39,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -63,6 +64,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
@@ -310,6 +312,61 @@ fun LiveMeshTab(
                 }
                 Spacer(Modifier.height(6.dp))
                 LegendRow()
+            }
+
+            // Global Average Battery Health Panel
+            item {
+                val avgPct = (state.avgBattery * 100.0).roundToInt().coerceIn(0, 100)
+                val avgColor = batteryHealthColor(avgPct)
+                val warnCount = maxOf(0, state.nodeCount - state.healthyBatteryCount - state.lowBatteryCount)
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("global_battery_panel"),
+                    colors = CardDefaults.cardColors(containerColor = MeshPanel),
+                    border = BorderStroke(1.dp, MeshOutline)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "গ্লোবাল গড় ব্যাটারি হেলথ (Energy-Aware)",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "$avgPct%",
+                                fontFamily = MonoFont,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = avgColor
+                            )
+                        }
+                        LinearProgressIndicator(
+                            progress = { (avgPct / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp)),
+                            color = avgColor,
+                            trackColor = MeshPanelElevated
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            MetricBadge("সুস্থ (≥60%)", "${state.healthyBatteryCount}", MeshMint, Modifier.weight(1f))
+                            MetricBadge("মাঝারি", "$warnCount", MeshAmber, Modifier.weight(1f))
+                            MetricBadge("লো (<25%)", "${state.lowBatteryCount}", MeshCoral, Modifier.weight(1f))
+                        }
+                    }
+                }
             }
 
             // Selection Info
@@ -589,21 +646,31 @@ private fun TopologyCanvas(
             drawPath(path = path, color = MeshCobalt, style = Stroke(width = 5f))
         }
 
-        // Nodes
+        // Nodes (Energy-aware battery gradient: MeshCoral -> MeshAmber -> MeshMint)
         val isChord = state.settings.backbone == "chord"
+        val bats = state.nodeBatteries
         for (i in 0 until state.nodeCount) {
             val f = flags[i].code - 48
             val p = l.nodes[i]
             val alive = (f and 1) != 0
             val online = (f and 2) != 0
             val gw = if (isChord) ((f and 4) != 0) else false
-            val r = if (gw) 7.5f else 4.5f
+            val r = if (gw) 8.0f else 5.2f
+            val battPct = if (i < bats.size) bats[i] else if (online) 85 else 55
+            val battColor = batteryHealthColor(battPct)
             if (!alive) {
                 drawCircle(color = MeshCoral, radius = r, center = p, style = Stroke(width = 2.2f))
             } else {
-                drawCircle(color = if (online) MeshMint else MeshTextDim, radius = r, center = p)
+                drawCircle(
+                    color = if (online) battColor else battColor.copy(alpha = 0.58f),
+                    radius = r,
+                    center = p
+                )
+                if (online) {
+                    drawCircle(color = Color.White, radius = r * 0.36f, center = p)
+                }
                 if (gw) {
-                    drawCircle(color = Color.White, radius = r, center = p, style = Stroke(width = 2.2f))
+                    drawCircle(color = Color.White, radius = r + 1.2f, center = p, style = Stroke(width = 2.0f))
                 }
             }
         }
@@ -654,6 +721,15 @@ private fun TopologyCanvas(
     }
 }
 
+private fun batteryHealthColor(pct: Int): Color {
+    val clamped = pct.coerceIn(0, 100) / 100f
+    return if (clamped < 0.5f) {
+        lerp(MeshCoral, MeshAmber, clamped / 0.5f)
+    } else {
+        lerp(MeshAmber, MeshMint, (clamped - 0.5f) / 0.5f)
+    }
+}
+
 @Composable
 private fun LegendRow() {
     Row(
@@ -663,10 +739,9 @@ private fun LegendRow() {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        LegendDot(MeshMint, "অনলাইন")
-        LegendDot(MeshTextDim, "অফলাইন")
-        LegendDot(MeshCoral, "বন্ধ")
-        LegendDot(MeshAmber, "জোন লিংক")
+        LegendDot(MeshMint, "ব্যাটারি ≥60% / সুস্থ")
+        LegendDot(MeshAmber, "মাঝারি / জোন লিংক")
+        LegendDot(MeshCoral, "লো ব্যাটারি (<25%) / বন্ধ")
         LegendDot(MeshCobalt, "শেখা পথ / ACK")
         LegendDot(MeshViolet, "সার্ভার")
     }

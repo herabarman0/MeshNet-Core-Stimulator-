@@ -111,6 +111,27 @@ public final class SybilGuard {
         return new AdmissionResult(false, true, zeros, b.tokens, "রেট-লিমিটেড (স্প্যাম ফ্লাডিং ব্লকড)");
     }
 
+    public synchronized AdmissionResult admitRate(int senderId, double trustScore, long nowMs) {
+        PeerBucket b = bucketOf(senderId, nowMs);
+        double dtSec = Math.max(0.0, (nowMs - b.lastRefillMs) / 1000.0);
+        double trustMul = 0.4 + 1.2 * Math.max(0.0, Math.min(1.0, trustScore));
+        b.tokens = Math.min(maxBurstTokens, b.tokens + dtSec * refillPerSec * trustMul);
+        b.lastRefillMs = nowMs;
+
+        if (b.tokens >= 1.0) {
+            b.tokens -= 1.0;
+            b.accepted++;
+            return new AdmissionResult(true, true, requiredPowBits, b.tokens, "রেট-অনুমোদিত");
+        }
+        b.blocked++;
+        return new AdmissionResult(false, true, requiredPowBits, b.tokens, "রেট-লিমিটেড (স্প্যাম ফ্লাডিং ব্লকড)");
+    }
+
+    public synchronized boolean hasAcceptedPeer(int senderId) {
+        PeerBucket b = buckets.get(senderId);
+        return b != null && b.accepted > 0;
+    }
+
     public synchronized long totalBlocked(int senderId) {
         PeerBucket b = buckets.get(senderId);
         return b == null ? 0L : b.blocked;

@@ -139,6 +139,7 @@ public final class Dtn {
         long now = c.now();
         prophet.encounter(node, now);
         rhythm.hit(node, now);
+        if (c.aiRouter() != null) c.aiRouter().observeNode(node, c.zone(), now);
         c.sendToNeighbor(node, BCAST_PROPHET, prophet.table(30));
         c.schedule(400, new Runnable() {          // give the neighbour's table a moment to arrive
             @Override public void run() {
@@ -236,6 +237,7 @@ public final class Dtn {
         for (Map.Entry<Integer, double[]> e : it.handed.entrySet()) {
             double y = e.getKey() == via ? 1.0 : 0.6;
             brain.learn(e.getValue(), y);
+            if (c.aiRouter() != null) c.aiRouter().trainOutcome(aiFeaturesFor(it, e.getKey()), y);
             bumpReliability(e.getKey(), y);
         }
         if (!it.delivered) delivered++;
@@ -247,6 +249,7 @@ public final class Dtn {
         if (it.mine && !it.delivered) {
             for (Map.Entry<Integer, double[]> e : it.handed.entrySet()) {   // never arrived: every hand-over was a bad bet
                 brain.learn(e.getValue(), 0.0);
+                if (c.aiRouter() != null) c.aiRouter().trainOutcome(aiFeaturesFor(it, e.getKey()), 0.0);
                 bumpReliability(e.getKey(), 0.0);
             }
         }
@@ -260,7 +263,13 @@ public final class Dtn {
         final String gk = it.key + ":" + nb;
         if (giving.containsKey(gk)) return;
         final double[] x = features(it, nb);
-        if (brain.decide(x)) {
+        boolean aiAgree = true;
+        if (c.aiRouter() != null) {
+            com.herabarman.meshnet.core.PredictiveAiRouter.RouteDecision aiDec = c.aiRouter().precomputeBestRoute(
+                    it.dst, java.util.Collections.singletonList(nb), null, null, c.now());
+            aiAgree = aiDec != null && aiDec.reliability >= 0.45;
+        }
+        if (brain.decide(x) && aiAgree) {
             final int give = it.copies / 2;
             giving.put(gk, c.now());
             byte[] payload = ByteBuffer.allocate(27 + it.cipher.length).putLong(it.key).putInt(it.origin).putInt(it.dst)
@@ -276,6 +285,13 @@ public final class Dtn {
         } else {
             kept++;
         }
+    }
+
+    private double[] aiFeaturesFor(Item it, int nb) {
+        double[] f = features(it, nb);
+        return new double[]{
+                f[0], f[1], f[2], f[8], 0.5, f[3], f[4], 0.8, 0.0, 0.8, f[6], f[5]
+        };
     }
 
     private double[] features(Item it, int nb) {

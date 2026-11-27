@@ -1,6 +1,7 @@
 package com.herabarman.meshnet.kit;
 
 import com.herabarman.meshnet.core.Crypto;
+import com.herabarman.meshnet.core.HybridKeyExchange;
 import com.herabarman.meshnet.core.StorageAdapter;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -54,6 +55,8 @@ public final class E2eeCrypto implements Crypto {
     private final Map<Integer, List<String>> bootSeen = new HashMap<>();
     private final Map<java.nio.ByteBuffer, byte[]> encCache = lru();
     private final Map<java.nio.ByteBuffer, byte[]> decCache = lru();
+    private final HybridKeyExchange.HybridIdentity hybridIdentity;
+    private final Map<Integer, byte[]> pqcSecrets = new HashMap<>();
     private volatile MissingKeyListener missing;
     private volatile SessionLostListener lost;
 
@@ -64,6 +67,7 @@ public final class E2eeCrypto implements Crypto {
         this.me = me;
         this.directory = directory;
         this.store = store;
+        this.hybridIdentity = HybridKeyExchange.generateIdentity();
     }
 
     private static <V> Map<java.nio.ByteBuffer, V> lru() {
@@ -152,11 +156,33 @@ public final class E2eeCrypto implements Crypto {
         if (store != null) store.put("dr-" + node, r.serialize());
     }
 
+    public byte[] hybridX25519Pub() { return hybridIdentity.x25519Pub.clone(); }
+    public byte[] mlKemEncapsulationKey() { return hybridIdentity.mlKemEk.clone(); }
+    public boolean hasPqcSession(int node) { return pqcSecrets.containsKey(node); }
+
+    /** Initiator side: encapsulate ML-KEM-768 + X25519 against peer's keys and mix into future Double Ratchet root key. */
+    public HybridKeyExchange.InitiatorOffer initiatePqcSession(int peerNode, byte[] peerX25519Pub, byte[] peerMlKemEk) {
+        HybridKeyExchange.InitiatorOffer offer = HybridKeyExchange.initiate(hybridIdentity, peerX25519Pub, peerMlKemEk);
+        pqcSecrets.put(peerNode, offer.sessionKey);
+        resetSession(peerNode);
+        return offer;
+    }
+
+    /** Responder side: decapsulate peer's ML-KEM-768 ciphertext and mix into Double Ratchet root key. */
+    public byte[] acceptPqcOffer(int peerNode, byte[] initiatorX25519Pub, byte[] mlKemCiphertext) {
+        byte[] key = HybridKeyExchange.respond(hybridIdentity, initiatorX25519Pub, mlKemCiphertext);
+        pqcSecrets.put(peerNode, key);
+        resetSession(peerNode);
+        return key;
+    }
+
     private byte[] rk0(int node, byte[] peerRaw) {
-        byte[] info = ByteBuffer.allocate(8 + 12).put("mesh-dr-v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).array();
-        info = Ratchet.concat("mesh-dr-v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+        byte[] info = Ratchet.concat("mesh-dr-v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
                 ByteBuffer.allocate(8).putInt(Math.min(selfId, node)).putInt(Math.max(selfId, node)).array());
-        return Ratchet.hkdf("mesh-dr-salt".getBytes(java.nio.charset.StandardCharsets.US_ASCII), me.sharedSecret(peerRaw), info, 32);
+        byte[] classical = Ratchet.hkdf("mesh-dr-salt".getBytes(java.nio.charset.StandardCharsets.US_ASCII), me.sharedSecret(peerRaw), info, 32);
+        byte[] pq = pqcSecrets.get(node);
+        if (pq == null) return classical;
+        return Ratchet.hkdf(pq, classical, "mesh-dr-pq-mlkem768-v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 32);
     }
 
     private static byte[] ad(int src, int dst, int mode) { return ByteBuffer.allocate(9).putInt(src).putInt(dst).put((byte) mode).array(); }

@@ -76,6 +76,10 @@ data class LiveMeshUiState(
     val showAll: Boolean = false,
     val seq: Long = 0L,
     val nodeFlags: String = "",
+    val nodeBatteries: IntArray = IntArray(0),
+    val avgBattery: Double = 1.0,
+    val healthyBatteryCount: Int = 0,
+    val lowBatteryCount: Int = 0,
     val intraEdges: IntArray = IntArray(0),
     val backboneEdges: IntArray = IntArray(0),
     val route: IntArray = IntArray(0),
@@ -142,6 +146,14 @@ data class LiveMeshUiState(
             val spd = root.getDouble("speed")
             val showAll = root.getBoolean("showAll")
 
+            val batArr = root.optJSONArray("bat")
+            val batteries = if (batArr != null) {
+                IntArray(batArr.length()) { batArr.getInt(it) }
+            } else IntArray(0)
+            val avgBattery = root.optDouble("avgBattery", 1.0)
+            val healthyBat = root.optInt("healthyBattery", 0)
+            val lowBat = root.optInt("lowBattery", 0)
+
             return LiveMeshUiState(
                 ready = true,
                 simTimeMs = root.getLong("t"),
@@ -153,6 +165,10 @@ data class LiveMeshUiState(
                 showAll = showAll,
                 seq = root.getLong("seq"),
                 nodeFlags = root.getString("st"),
+                nodeBatteries = batteries,
+                avgBattery = avgBattery,
+                healthyBatteryCount = healthyBat,
+                lowBatteryCount = lowBat,
                 intraEdges = intra,
                 backboneEdges = bb,
                 route = route,

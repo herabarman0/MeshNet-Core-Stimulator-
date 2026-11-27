@@ -16,6 +16,17 @@ public final class PhotoSender {
 
     private PhotoSender() { }
 
+    public static void sendUltraCompact(final MeshClient client, final String toUser, final byte[] photo, final ImageShrinker.Codec codec, final Callback cb) {
+        send(client, toUser, photo, codec, ImageShrinker.Config.ultraCompactVisuallyLossless(), cb);
+    }
+
+    /** Synchronous helper for UI previews: returns shrunk bytes + SSIM without altering original unless smaller. */
+    public static ImageShrinker.Result compressVisuallyLossless(final byte[] photo, final ImageShrinker.Codec codec, final int maxBytes) {
+        ImageShrinker.Config cfg = ImageShrinker.Config.ultraCompactVisuallyLossless();
+        if (maxBytes > 0) cfg.maxBytes = maxBytes;
+        return new ImageShrinker(codec).shrink(photo, cfg);
+    }
+
     public static void send(final MeshClient client, final String toUser, final byte[] photo, final ImageShrinker.Codec codec, ImageShrinker.Config cfgIn, final Callback cb) {
         final ImageShrinker.Config cfg = cfgIn != null ? cfgIn : new ImageShrinker.Config();
         if (cfg.maxBytes <= 0 || cfg.maxBytes > MeshClient.MAX_BLOB_BYTES) cfg.maxBytes = Math.min(300 * 1024, MeshClient.MAX_BLOB_BYTES);

@@ -142,6 +142,12 @@ public final class MeshClient {
         private BulkLink bulk;
         private int bulkMinBytes = 16 * 1024;
         private long bulkAckMs = 20_000;
+        private boolean predictiveAi;
+        private boolean compressPayloads;
+        private boolean sybilGuard;
+        private boolean turbo;
+        private boolean dpiMasking;
+        private byte[] dpiMaskKey;
 
         private Builder(String userId) { this.userId = userId; }
 
@@ -157,13 +163,25 @@ public final class MeshClient {
         public Builder tune(Tuner t) { this.tweak = t; return this; }
         /** Outbox: first retry delay (doubles up to 15 min) and how often the outbox is looked at. */
         public Builder retry(long baseMs, long tickMs) { this.retryBaseMs = baseMs; this.tickMs = tickMs; return this; }
-        /** How long the phone must stay in a new cell before its zone changes (default 20 s). */
         /** Per-neighbour limit on incoming mesh packets: burst, then packets per second. */
         public Builder rateLimit(double burst, double perSecond) { this.rateBurst = burst; this.ratePerSec = perSecond; return this; }
         /** Carry messages for others and hand copies to passing phones (see Dtn). */
         public Builder dtn(boolean on) { this.dtn = on; return this; }
         /** Pad every encrypted message to a size bucket so lengths do not leak what is being said. */
         public Builder maskTraffic(boolean on) { this.mask = on; return this; }
+        public Builder predictiveAi(boolean on) { this.predictiveAi = on; return this; }
+        public Builder compressPayloads(boolean on) { this.compressPayloads = on; return this; }
+        public Builder sybilGuard(boolean on) { this.sybilGuard = on; return this; }
+        public Builder turbo(boolean on) { this.turbo = on; return this; }
+        public Builder trafficMasking(boolean on, byte[] maskKey) { this.dpiMasking = on; this.dpiMaskKey = maskKey; return this; }
+        /** Enable PredictiveAiRouter, LZ4 compress-then-encrypt, SybilGuard PoW/rate-limit, and Turbo 5-lane coalescing. */
+        public Builder worldClassEngine() {
+            this.predictiveAi = true;
+            this.compressPayloads = true;
+            this.sybilGuard = true;
+            this.turbo = true;
+            return this;
+        }
         /**
          * A fast side-channel for big payloads to a direct neighbour (Nearby FILE payload, TcpBulk over Wi-Fi Direct / hotspot / LAN).
          * Payloads of at least minBytes use it when the destination is a direct neighbour with a bulk path; they are still end-to-end
@@ -317,6 +335,12 @@ public final class MeshClient {
         cfg.txBurst = 20;
         cfg.chunkBytes = 4096;                       // large messages: 4 KB per chunk (a Nearby payload takes 32 KB) ...
         cfg.chunkWindow = 4;                         // ... and 4 chunks in flight
+        cfg.predictiveAiRouting = b.predictiveAi;
+        cfg.compressPayloads = b.compressPayloads;
+        cfg.sybilGuardEnabled = b.sybilGuard;
+        cfg.turboCoalescing = b.turbo;
+        cfg.trafficMasking = b.dpiMasking;
+        cfg.trafficMaskKey = b.dpiMaskKey;
         if (b.tweak != null) b.tweak.tune(cfg);
 
         int coreZone = flat ? 0 : zone;
@@ -908,6 +932,13 @@ public final class MeshClient {
 
     /** The DTN / data-mule engine (null unless built with dtn(true)). */
     public Dtn dtn() { return dtn; }
+    public com.herabarman.meshnet.core.PredictiveAiRouter aiRouter() { return node.aiRouter(); }
+    public com.herabarman.meshnet.core.SybilGuard sybilGuard() { return node.sybilGuard(); }
+    public MeshNode coreNode() { return node; }
+    public E2eeCrypto crypto() { return crypto; }
+    public com.herabarman.meshnet.core.MeshRtpLayer attachRtp(com.herabarman.meshnet.core.MeshRtpLayer.Callbacks cb) {
+        return new com.herabarman.meshnet.core.MeshRtpLayer(node, voice, clock, cb);
+    }
     public int selfNode() { return selfId; }
     public IdMap idMap() { return ids; }
     public IdentityKeys identity() { return identity; }

@@ -1,10 +1,29 @@
-# R8 / ProGuard rules for apps that include the mesh engine. The engine uses no reflection and no serialization frameworks,
-# so shrinking is safe; only keep what the app calls (the public client API) and let R8 drop the rest.
+# R8 / ProGuard rules for apps that include the mesh engine.
 -keep public class com.herabarman.meshnet.kit.MeshClient { public *; }
 -keep public class com.herabarman.meshnet.kit.MeshClient$* { public *; }
+-keep public class com.herabarman.meshnet.kit.LostPhone { public *; }
+-keep public class com.herabarman.meshnet.kit.LostPhone$* { public *; }
+-keep public class com.herabarman.meshnet.kit.BulkMux { public *; }
+-keep public class com.herabarman.meshnet.kit.BulkMux$* { public *; }
+-keep public class com.herabarman.meshnet.kit.PhotoSender { public *; }
+-keep public class com.herabarman.meshnet.kit.PhotoSender$* { public *; }
+-keep public class com.herabarman.meshnet.kit.E2eeCrypto { public *; }
+-keep public class com.herabarman.meshnet.core.ContactCard { public *; }
+-keep public class com.herabarman.meshnet.core.ContactCard$* { public *; }
+-keep public class com.herabarman.meshnet.core.SpillRadio { public *; }
+-keep public class com.herabarman.meshnet.core.PredictiveAiRouter { public *; }
+-keep public class com.herabarman.meshnet.core.SybilGuard { public *; }
+-keep public class com.herabarman.meshnet.core.OnionRouter { public *; }
+-keep public class com.herabarman.meshnet.core.TurboScheduler { public *; }
+-keep public class com.herabarman.meshnet.core.PayloadCompressor { public *; }
+-keep public class com.herabarman.meshnet.core.FecCodec { public *; }
+-keep public class com.herabarman.meshnet.core.HybridKeyExchange { public *; }
 -keep public class com.herabarman.meshnet.android.MeshNet { public *; }
 -keep public class com.herabarman.meshnet.android.MeshNet$* { public *; }
 -keep public class com.herabarman.meshnet.android.MeshService { public *; }
+-keep public class com.herabarman.meshnet.android.HotspotHelper { public *; }
+-keep public class com.herabarman.meshnet.android.HotspotHelper$* { public *; }
+-keep public class com.herabarman.meshnet.android.AndroidImageCodec { public *; }
 -keep public interface com.herabarman.meshnet.kit.RawRadio { *; }
 -keep public interface com.herabarman.meshnet.kit.BulkLink { *; }
 -dontwarn com.google.android.gms.**

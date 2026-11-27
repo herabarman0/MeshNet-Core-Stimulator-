@@ -174,7 +174,20 @@ fun MeshHubTab(
                         .minimumInteractiveComponentSize()
                         .testTag("hub_subtab_worldclass")
                 ) {
-                    Text("কোর · সিকিউরিটি", maxLines = 1)
+                    Text("কোর", maxLines = 1)
+                }
+                Button(
+                    onClick = { subTab = 3 },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (subTab == 3) MeshAmber else MeshPanelElevated,
+                        contentColor = if (subTab == 3) Color(0xFF1F1200) else MaterialTheme.colorScheme.onSurface
+                    ),
+                    modifier = Modifier
+                        .weight(1.1f)
+                        .minimumInteractiveComponentSize()
+                        .testTag("hub_subtab_services")
+                ) {
+                    Text("ফোন·ছবি", maxLines = 1)
                 }
             }
             Spacer(Modifier.height(8.dp))
@@ -184,6 +197,8 @@ fun MeshHubTab(
             ResilienceAiPanel(vm = vm, modifier = Modifier.weight(1f))
         } else if (subTab == 2) {
             WorldClassCorePanel(vm = vm, modifier = Modifier.weight(1f))
+        } else if (subTab == 3) {
+            ServicesToolsPanel(vm = vm, modifier = Modifier.weight(1f))
         } else {
             LazyColumn(
                 modifier = Modifier

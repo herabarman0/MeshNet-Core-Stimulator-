@@ -131,6 +131,13 @@ public final class MeshNode implements Transport.Listener {
     private RouteCache routes;
     private DedupCache delivered;
     private java.util.LinkedHashMap<Long, Integer> ackHops;
+    private final PredictiveAiRouter aiRouter = new PredictiveAiRouter();
+    private final RelayFairnessLedger fairnessLedger = new RelayFairnessLedger();
+    private final SybilGuard sybilGuard;
+    private final Map<Integer, TurboScheduler> turboPerPeer = new HashMap<>();
+    private final Set<Integer> turboScheduled = new HashSet<>();
+    private byte[] onionPrivateKey;
+    private static final byte[] ONION_MAGIC = new byte[]{'O', 'N', 'I', 'O'};
 
     public MeshNode(NodeInfo info, MeshConfig cfg, Transport transport, Clock clock,
                     ZoneRouter.ZoneMap zones, Crypto crypto, ServerBridge server, Random rng) {
@@ -155,6 +162,7 @@ public final class MeshNode implements Transport.Listener {
         this.crypto = crypto;
         this.server = server;
         this.rng = rng;
+        this.sybilGuard = new SybilGuard(cfg.sybilPowBits, cfg.sybilBurst, cfg.sybilRefillPerSec);
         this.dedup = new DedupCache(cfg.dedupMaxEntries, cfg.dedupTtlMs);
         this.voiceDedup = new DedupCache(cfg.voiceDedupMax, cfg.voiceDedupTtlMs);
         this.load = new LoadMeter(cfg.loadCapacityPerSec, 1000);
@@ -183,6 +191,10 @@ public final class MeshNode implements Transport.Listener {
     /** Did this neighbour tell me (HELLO) that it is saving battery? */
     public boolean isLeafPeer(int peer) { return leafPeers.contains(peer); }
     public Pacer pacer() { return pacer; }
+    public PredictiveAiRouter aiRouter() { return aiRouter; }
+    public RelayFairnessLedger fairnessLedger() { return fairnessLedger; }
+    public SybilGuard sybilGuard() { return sybilGuard; }
+    public void setOnionPrivateKey(byte[] x25519PrivateKey) { this.onionPrivateKey = x25519PrivateKey == null ? null : x25519PrivateKey.clone(); }
 
     /**
      * Tell the engine the battery level (0..1). Below lowBattery the node becomes a leaf: it still sends and
@@ -198,6 +210,36 @@ public final class MeshNode implements Transport.Listener {
     }
 
     private void out(int peer, byte[] data, int priority) {
+        outTyped(peer, data, priority, Packet.TYPE_DATA);
+    }
+
+    private void outTyped(final int peer, byte[] data, int priority, int pktType) {
+        if (cfg.turboCoalescing) {
+            TurboScheduler ts = turboPerPeer.get(peer);
+            if (ts == null) {
+                ts = new TurboScheduler();
+                turboPerPeer.put(peer, ts);
+            }
+            ts.enqueue(priority, pktType, data);
+            if (priority >= Priority.SOS || pktType == Packet.TYPE_VOICE || ts.totalQueued() >= 4) {
+                byte[] burst = ts.nextBurst(cfg.turboMtuBytes);
+                if (burst != null) tx(peer, burst);
+            }
+            if (ts.totalQueued() > 0 && turboScheduled.add(peer)) {
+                clock.schedule(Math.max(1L, cfg.turboFlushMs), new Runnable() {
+                    @Override public void run() {
+                        turboScheduled.remove(peer);
+                        TurboScheduler q = turboPerPeer.get(peer);
+                        if (q == null) return;
+                        byte[] burst;
+                        while ((burst = q.nextBurst(cfg.turboMtuBytes)) != null) {
+                            tx(peer, burst);
+                        }
+                    }
+                });
+            }
+            return;
+        }
         pacer.send(peer, data, priority);
     }
     public int backbonePeerCount() { return backbonePeers.size(); }
@@ -262,8 +304,9 @@ public final class MeshNode implements Transport.Listener {
     }
 
     private void tx(int peer, byte[] data) {
+        byte[] wire = cfg.trafficMasking ? TrafficMasker.maskAsHttpsTls(data, cfg.trafficMaskKey) : data;
         load.onTransmit(clock.nowMs());
-        transport.send(peer, data);
+        transport.send(peer, wire);
     }
 
     private NeighborInfo neighbor(int peer) {
@@ -309,6 +352,10 @@ public final class MeshNode implements Transport.Listener {
 
     /** Hand a packet to the radio queue. Voice gets a short patience: a late voice frame is dropped, not sent. */
     private void outPkt(int peer, byte[] bytes, Packet p) {
+        if (cfg.turboCoalescing) {
+            outTyped(peer, bytes, p.priority, p.type);
+            return;
+        }
         if (p.type == Packet.TYPE_VOICE) pacer.send(peer, bytes, p.priority, cfg.voiceMaxWaitMs);
         else pacer.send(peer, bytes, p.priority);
     }
@@ -387,6 +434,18 @@ public final class MeshNode implements Transport.Listener {
         return send(Packet.TYPE_DATA, dst, plain, priority);
     }
 
+    /**
+     * Send an onion-routed message across {@code routeNodes} (relays followed by final destination) using
+     * {@link OnionRouter}. Each relay peels only its own X25519 layer and forwards to {@code res.nextHop}.
+     */
+    public long sendOnion(int[] routeNodes, byte[][] nodeX25519Pubs, byte[] innerPlain, int priority) {
+        byte[] env = OnionRouter.wrap(routeNodes, nodeX25519Pubs, innerPlain);
+        byte[] wrapped = new byte[ONION_MAGIC.length + env.length];
+        System.arraycopy(ONION_MAGIC, 0, wrapped, 0, ONION_MAGIC.length);
+        System.arraycopy(env, 0, wrapped, ONION_MAGIC.length, env.length);
+        return send(Packet.TYPE_DATA, routeNodes[0], wrapped, priority);
+    }
+
     /** Send one chunk of a large message (used by ChunkLayer). Same delivery guarantees as send(). */
     public long sendChunk(int dst, byte[] plain, int priority) {
         return send(Packet.TYPE_CHUNK, dst, plain, priority);
@@ -408,7 +467,8 @@ public final class MeshNode implements Transport.Listener {
 
     private long send(int type, int dst, byte[] plain, int priority) {
         long msgId = rng.nextLong();
-        byte[] body = crypto.encrypt(plain, id, dst, msgId);
+        byte[] toEncrypt = cfg.compressPayloads ? PayloadCompressor.compress(plain) : plain;
+        byte[] body = crypto.encrypt(toEncrypt, id, dst, msgId);
         Packet p = new Packet(type, isSos(priority) ? Math.max(cfg.defaultTtl, cfg.sosTtl) : cfg.defaultTtl, priority,
                 msgId, id, dst, body, 0, info.zone, resolveZone(dst));
         dedup.firstSeen(dedupKey(p), clock.nowMs()); // so echoes of my own packet are dropped
@@ -476,6 +536,9 @@ public final class MeshNode implements Transport.Listener {
         if (o.firstHop >= 0) {                      // I know which neighbour carried it: it gets the blame, only it
             NeighborInfo nb = neighbors.get(o.firstHop);
             if (nb != null) nb.onFailure(clock.nowMs());
+            if (cfg.predictiveAiRouting) {
+                aiRouter.trainOutcome(aiFeaturesFor(o.firstHop, o.packet.dst, o.packet.priority), 0.0);
+            }
             if (multi != null && o.packet.dstZone >= 0) {
                 multi.removePath(o.packet.dstZone == info.zone ? o.packet.dst : ZONE_KEY_BASE - o.packet.dstZone, o.firstHop);
             }
@@ -523,6 +586,22 @@ public final class MeshNode implements Transport.Listener {
 
     @Override
     public void onReceive(int fromPeer, byte[] data) {
+        if (cfg.trafficMasking) {
+            data = TrafficMasker.unmaskHttpsTls(data, cfg.trafficMaskKey);
+            if (data == null) {
+                if (listener != null) listener.onDropped(this, null, "mask-auth");
+                return;
+            }
+        }
+        if (cfg.turboCoalescing) {
+            List<byte[]> frames = TurboScheduler.unpackBurst(data);
+            for (byte[] frame : frames) handleIncomingFrame(fromPeer, frame);
+            return;
+        }
+        handleIncomingFrame(fromPeer, data);
+    }
+
+    private void handleIncomingFrame(int fromPeer, byte[] data) {
         Packet p;
         try {
             p = Packet.decode(data);
@@ -533,6 +612,17 @@ public final class MeshNode implements Transport.Listener {
         if (p.type == Packet.TYPE_HELLO) {
             handleHello(fromPeer, p);
             return;
+        }
+        if (cfg.sybilGuardEnabled && fromPeer >= 0 && p.src != id && p.type != Packet.TYPE_ACK) {
+            double trust = fairnessLedger.fairnessScore(fromPeer);
+            SybilGuard.AdmissionResult adm = sybilGuard.admitRate(fromPeer, trust, clock.nowMs());
+            if (!adm.allowed) {
+                if (listener != null) listener.onDropped(this, p, "sybil-rate");
+                return;
+            }
+        }
+        if (p.src >= 0 && p.src != id) {
+            aiRouter.observeNode(p.src, p.srcZone, clock.nowMs());
         }
         if (isSos(p.priority) && p.src != id && !sosAllowed(p.src)) {
             p = new Packet(p.type, p.ttl, Priority.URGENT, p.msgId, p.src, p.dst, p.payload, p.attempt, p.srcZone, p.dstZone);   // too many alarms from one sender: still delivered, no emergency lane
@@ -569,6 +659,7 @@ public final class MeshNode implements Transport.Listener {
             if (listener != null) listener.onDropped(this, p, refuse);
             return;
         }
+        if (fromPeer >= 0) fairnessLedger.recordRelayForPeer(fromPeer, data.length);
         route(p.withTtl(p.ttl - 1), fromPeer);
     }
 
@@ -594,6 +685,9 @@ public final class MeshNode implements Transport.Listener {
             if (o != null && o.firstHop >= 0) {
                 NeighborInfo nb = neighbors.get(o.firstHop);
                 if (nb != null) nb.onSuccess(Math.max(0, clock.nowMs() - o.sentAtMs));
+                if (cfg.predictiveAiRouting) {
+                    aiRouter.trainOutcome(aiFeaturesFor(o.firstHop, o.packet.dst, o.packet.priority), 1.0);
+                }
             }
             if (o != null && listener != null) listener.onAcked(this, o.packet.msgId);
             return;
@@ -627,12 +721,47 @@ public final class MeshNode implements Transport.Listener {
                 if (listener != null) listener.onDropped(this, p, "auth");
                 return; // never confirm something that failed authentication
             }
-            if (listener != null) listener.onDelivered(this, p, plain, fromPeer);
+            if (cfg.compressPayloads) {
+                byte[] unpacked = PayloadCompressor.decompress(plain);
+                if (unpacked == null) {
+                    if (listener != null) listener.onDropped(this, p, "decompress");
+                    return;
+                }
+                plain = unpacked;
+            }
+            if (hasOnionPrefix(plain)) {
+                if (onionPrivateKey == null) {
+                    if (listener != null) listener.onDropped(this, p, "no-onion-key");
+                    return;
+                }
+                byte[] env = java.util.Arrays.copyOfRange(plain, ONION_MAGIC.length, plain.length);
+                OnionRouter.PeelResult peel = OnionRouter.peel(onionPrivateKey, env);
+                if (peel == null) {
+                    if (listener != null) listener.onDropped(this, p, "onion-auth");
+                    return;
+                }
+                if (peel.isFinal) {
+                    if (listener != null) listener.onDelivered(this, p, peel.payloadOrInner, fromPeer);
+                } else {
+                    byte[] nextWrapped = new byte[ONION_MAGIC.length + peel.payloadOrInner.length];
+                    System.arraycopy(ONION_MAGIC, 0, nextWrapped, 0, ONION_MAGIC.length);
+                    System.arraycopy(peel.payloadOrInner, 0, nextWrapped, ONION_MAGIC.length, peel.payloadOrInner.length);
+                    send(Packet.TYPE_DATA, peel.nextHop, nextWrapped, p.priority);
+                }
+            } else {
+                if (listener != null) listener.onDelivered(this, p, plain, fromPeer);
+            }
         } else if (listener != null) {
             listener.onDuplicate(this, p); // a fallback retransmission of something I already have
         }
         if (!firstCopy) ackLost(p);
         if (cfg.ackEnabled) sendAck(p); // also for repeats: the earlier ACK may have been lost
+    }
+
+    private static boolean hasOnionPrefix(byte[] b) {
+        return b != null && b.length > ONION_MAGIC.length
+                && b[0] == ONION_MAGIC[0] && b[1] == ONION_MAGIC[1]
+                && b[2] == ONION_MAGIC[2] && b[3] == ONION_MAGIC[3];
     }
 
     /** A packet for every node of my zone (PUBLISH, LOOKUP): act on it, then keep it flowing through the zone. */
@@ -733,21 +862,24 @@ public final class MeshNode implements Transport.Listener {
         greeted.add(peer);
         Packet h = new Packet(Packet.TYPE_HELLO, 1, 255, rng.nextLong(), id, peer, helloPayload(peer), 0,
                 info.zone, Packet.UNKNOWN_ZONE);
-        out(peer, h.encode(), 255);
+        outTyped(peer, h.encode(), 255, Packet.TYPE_HELLO);
     }
 
     /**
-     * HELLO payload. Without beacons it is the one-byte "I am saving battery" flag (bit0). With beacons it is the
-     * 5-byte {@link Beacon}, and the saving-battery flag travels in bit4 of the beacon's flags byte. A receiver
-     * tells the two apart by length.
+     * HELLO payload. Without beacons it is the one-byte "I am saving battery" flag (bit0). With beacons (or SybilGuard)
+     * it starts with the 5-byte {@link Beacon}, and when SybilGuard is enabled appends an 8-byte Hashcash PoW nonce.
      */
     private byte[] helloPayload(int peer) {
-        if (cfg.beaconMs > 0) {
-            byte[] b = makeBeacon(peer, false).encode();
-            if (leaf) b[1] |= 0x10;
-            return b;
+        byte[] base;
+        if (cfg.beaconMs > 0 || cfg.sybilGuardEnabled) {
+            base = makeBeacon(peer, false).encode();
+            if (leaf) base[1] |= 0x10;
+        } else {
+            base = new byte[]{(byte) (leaf ? 1 : 0)};
         }
-        return new byte[]{(byte) (leaf ? 1 : 0)};
+        if (!cfg.sybilGuardEnabled) return base;
+        long nonce = SybilGuard.mintPow(id, base, cfg.sybilPowBits);
+        return ByteBuffer.allocate(base.length + 8).put(base).putLong(nonce).array();
     }
 
     private int flagsNow() {
@@ -816,8 +948,23 @@ public final class MeshNode implements Transport.Listener {
 
     private void handleHello(int from, Packet p) {
         if (from < 0) return;
+        if (cfg.sybilGuardEnabled) {
+            if (p.payload.length < Beacon.SIZE + 8) {
+                if (listener != null) listener.onDropped(this, p, "sybil-hello-short");
+                return;
+            }
+            int baseLen = p.payload.length - 8;
+            byte[] base = java.util.Arrays.copyOf(p.payload, baseLen);
+            long nonce = ByteBuffer.wrap(p.payload, baseLen, 8).getLong();
+            SybilGuard.AdmissionResult adm = sybilGuard.admitPacket(from, base, nonce, fairnessLedger.fairnessScore(from), clock.nowMs());
+            if (!adm.allowed) {
+                if (listener != null) listener.onDropped(this, p, "sybil-hello-pow");
+                return;
+            }
+        }
         Beacon beacon = Beacon.decode(p.payload);
         if (beacon != null && knownPeers.contains(from)) neighbor(from).onBeacon(beacon, clock.nowMs());
+        aiRouter.observeNode(from, p.srcZone, clock.nowMs());
         if (!cfg.discovery) return;
         if (!knownPeers.contains(from)) knownPeers.add(from);
         Integer oldZone = peerZone.get(from);
@@ -1053,7 +1200,7 @@ public final class MeshNode implements Transport.Listener {
         return ZoneRouter.chooseNextHop(info.zone, dstZone, cfg.zoneCount, backbonePeers, peerZones, peer -> true);
     }
 
-    /** Unicast along a learned route if there is a live one, otherwise flood. Retransmissions always flood. */
+    /** Unicast along a learned route if there is a live one, else consult PredictiveAiRouter (if enabled), otherwise flood. */
     private void forwardInZone(Packet p, int from) {
         if (cfg.adaptiveRouting && cfg.routeLearning && p.attempt == 0 && multi != null) {
             int next = pickPath(routeKeyFor(p), from);
@@ -1070,7 +1217,39 @@ public final class MeshNode implements Transport.Listener {
                 return;
             }
         }
+        if (cfg.predictiveAiRouting && p.attempt == 0 && !zonePeers.isEmpty() && !Packet.isZoneAddress(p.dst)) {
+            List<Integer> cands = new ArrayList<>(zonePeers.size());
+            for (int peer : zonePeers) {
+                if (peer != from && !leafPeers.contains(peer)) cands.add(peer);
+            }
+            if (!cands.isEmpty()) {
+                PredictiveAiRouter.RouteDecision dec = aiRouter.precomputeBestRoute(
+                        p.dst, cands, neighbors, fairnessLedger, clock.nowMs());
+                if (dec != null && dec.reliability >= 0.72) {
+                    lastHop = dec.nextHop;
+                    outPkt(dec.nextHop, p.encode(), p);
+                    return;
+                }
+            }
+        }
         floodZone(p, from);
+    }
+
+    private double[] aiFeaturesFor(int hop, int dstNode, int priority) {
+        long now = clock.nowMs();
+        NeighborInfo ni = neighbors.get(hop);
+        double relayOnline = aiRouter.onlineLikelihood(hop, now);
+        double dstOnline = aiRouter.onlineLikelihood(dstNode, now);
+        double fair = fairnessLedger.fairnessScore(hop);
+        double linkQ = ni == null ? 0.85 : Math.min(1.0, ni.successRate() / Math.max(1.0, ni.etx()));
+        double batt = ni == null ? 0.80 : Math.max(0.0, Math.min(1.0, ni.battery));
+        double charging = (ni != null && ni.charging) ? 1.0 : 0.0;
+        double loadMargin = ni == null ? 0.80 : Math.max(0.0, 1.0 - Math.min(1.0, ni.load));
+        int etaMins = aiRouter.expectedMinutesUntilOnline(dstNode, now);
+        return new double[]{
+                1.0, relayOnline, Math.max(0.0, relayOnline - 0.3), dstOnline, 0.5, fair, linkQ,
+                batt, charging, loadMargin, Math.min(1.0, priority / 255.0), Math.min(1.0, etaMins / 60.0)
+        };
     }
 
     /** Best live first hop among the known paths (never back where it came from), or -1. */

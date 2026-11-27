@@ -30,7 +30,17 @@ android {
         }
         release {
             isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             signingConfig = signingConfigs.getByName("debugConfig")
+        }
+    }
+
+    sourceSets {
+        getByName("main") {
+            java.directories.add("../android-kit/src/main/java")
         }
     }
 

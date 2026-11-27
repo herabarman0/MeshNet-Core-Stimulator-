@@ -84,6 +84,23 @@ public struct MeshPacket: Equatable {
         )
     }
 
+    /// Splits a framed `[u16 BE len][packet]...` buffer returned by `/inbox/<id>` into decoded packets.
+    public static func decodeInboxBatch(_ batch: Data) -> [MeshPacket] {
+        var packets: [MeshPacket] = []
+        var offset = batch.startIndex
+        while offset + 2 <= batch.endIndex {
+            let len = Int(readU16(batch, offset))
+            offset += 2
+            guard offset + len <= batch.endIndex else { break }
+            let slice = batch.subdata(in: offset..<(offset + len))
+            if let pkt = decode(slice) {
+                packets.append(pkt)
+            }
+            offset += len
+        }
+        return packets
+    }
+
     private func appendBE<T: FixedWidthInteger>(_ val: T, to data: inout Data) {
         var be = val.bigEndian
         withUnsafeBytes(of: &be) { data.append(contentsOf: $0) }
@@ -128,6 +145,52 @@ public enum MeshZones {
     }
 }
 
+public struct ParsedContactCard: Equatable {
+    public let version: Int
+    public let userId: String
+    public let nodeId: Int32
+    public let zone: Int32
+    public let identityPubBase64Url: String
+    public let x25519PubBase64Url: String
+    public let signatureBase64Url: String
+
+    public static func parse(uri: String) -> ParsedContactCard? {
+        guard uri.hasPrefix("meshnet://card?"),
+              let comps = URLComponents(string: uri),
+              let items = comps.queryItems else {
+            return nil
+        }
+        var dict: [String: String] = [:]
+        for item in items {
+            if let v = item.value { dict[item.name] = v }
+        }
+        guard let vStr = dict["v"], let ver = Int(vStr), ver == 1,
+              let uidB64 = dict["uid"], let uidData = base64UrlDecode(uidB64),
+              let uid = String(data: uidData, encoding: .utf8), !uid.isEmpty,
+              let nidStr = dict["nid"], let nid = Int32(nidStr),
+              let zStr = dict["z"], let zone = Int32(zStr),
+              let ed = dict["ed"], let x = dict["x"], let sig = dict["sig"] else {
+            return nil
+        }
+        return ParsedContactCard(
+            version: ver, userId: uid, nodeId: nid, zone: zone,
+            identityPubBase64Url: ed, x25519PubBase64Url: x, signatureBase64Url: sig
+        )
+    }
+
+    private static func base64UrlDecode(_ str: String) -> Data? {
+        var s = str.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while s.count % 4 != 0 { s.append("=") }
+        return Data(base64Encoded: s)
+    }
+}
+
+public struct MeshNodePresence: Equatable {
+    public let nodeId: Int32
+    public let online: Bool
+    public let zone: Int32
+}
+
 public final class MeshBridgeClient {
     private let baseURL: URL
     private let token: String?
@@ -153,5 +216,91 @@ public final class MeshBridgeClient {
         if let token { req.setValue(token, forHTTPHeaderField: "X-Mesh-Token") }
         let (_, resp) = try await session.data(for: req)
         return (resp as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    public func announcePresence(node: Int32, zone: Int32) async throws -> Bool {
+        let url = baseURL.appendingPathComponent("presence")
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "node", value: String(node)),
+            URLQueryItem(name: "zone", value: String(zone))
+        ]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "POST"
+        if let token { req.setValue(token, forHTTPHeaderField: "X-Mesh-Token") }
+        let (_, resp) = try await session.data(for: req)
+        return (resp as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    public func pollInbox(node: Int32, zone: Int32, waitSeconds: Int = 20) async throws -> [MeshPacket] {
+        let url = baseURL.appendingPathComponent("inbox").appendingPathComponent(String(node))
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "wait", value: String(max(0, min(25, waitSeconds)))),
+            URLQueryItem(name: "zone", value: String(zone))
+        ]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "GET"
+        if let token { req.setValue(token, forHTTPHeaderField: "X-Mesh-Token") }
+        let (data, resp) = try await session.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+        return MeshPacket.decodeInboxBatch(data)
+    }
+
+    public func queryWhere(ids: [Int32]) async throws -> [MeshNodePresence] {
+        let url = baseURL.appendingPathComponent("where")
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "ids", value: ids.map(String.init).joined(separator: ","))]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "GET"
+        if let token { req.setValue(token, forHTTPHeaderField: "X-Mesh-Token") }
+        let (data, resp) = try await session.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200,
+              let text = String(data: data, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap { line -> MeshNodePresence? in
+            let parts = line.split(separator: " ")
+            guard parts.count == 3,
+                  let nid = Int32(parts[0]),
+                  let on = Int(parts[1]),
+                  let z = Int32(parts[2]) else { return nil }
+            return MeshNodePresence(nodeId: nid, online: on == 1, zone: z)
+        }
+    }
+}
+
+public actor MeshInboxPoller {
+    private let bridge: MeshBridgeClient
+    private let nodeId: Int32
+    private var zone: Int32
+    private var task: Task<Void, Never>?
+
+    public init(bridge: MeshBridgeClient, nodeId: Int32, zone: Int32) {
+        self.bridge = bridge
+        self.nodeId = nodeId
+        self.zone = zone
+    }
+
+    public func updateZone(_ newZone: Int32) {
+        self.zone = newZone
+    }
+
+    public func start(onPackets: @escaping @Sendable ([MeshPacket]) -> Void) {
+        guard task == nil else { return }
+        task = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                let z = await self.zone
+                if let batch = try? await self.bridge.pollInbox(node: self.nodeId, zone: z, waitSeconds: 20),
+                   !batch.isEmpty {
+                    onPackets(batch)
+                } else {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
+        }
+    }
+
+    public func stop() {
+        task?.cancel()
+        task = nil
     }
 }

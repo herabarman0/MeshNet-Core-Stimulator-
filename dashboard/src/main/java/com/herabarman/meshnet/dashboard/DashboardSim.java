@@ -275,12 +275,31 @@ public final class DashboardSim {
                 .append(",\"mode\":\"").append(cfg.mode.name().toLowerCase().replace('_', '-')).append("\"}");
 
         sb.append(",\"st\":\"");
+        StringBuilder batSb = new StringBuilder(cfg.nodes * 4);
+        double sumBatt = 0.0;
+        int aliveCount = 0;
+        int healthyBatt = 0;
+        int lowBatt = 0;
         for (int i = 0; i < cfg.nodes; i++) {
             NodeInfo info = net.info(i);
             int f = (info.alive ? 1 : 0) | (info.online ? 2 : 0) | (net.node(i).isGateway() ? 4 : 0);
             sb.append((char) ('0' + f));
+            double batt = Math.max(0.0, Math.min(1.0, info.battery));
+            int pct = (int) Math.round(batt * 100.0);
+            if (i > 0) batSb.append(',');
+            batSb.append(pct);
+            if (info.alive) {
+                sumBatt += batt;
+                aliveCount++;
+                if (batt >= 0.60) healthyBatt++;
+                else if (batt < 0.25) lowBatt++;
+            }
         }
-        sb.append('"');
+        double avgBatt = aliveCount > 0 ? sumBatt / aliveCount : 0.0;
+        sb.append('"')
+                .append(",\"bat\":[").append(batSb).append(']')
+                .append(String.format(Locale.ROOT, ",\"avgBattery\":%.4f,\"healthyBattery\":%d,\"lowBattery\":%d",
+                        avgBatt, healthyBatt, lowBatt));
 
         StringBuilder intra = new StringBuilder();
         StringBuilder back = new StringBuilder();

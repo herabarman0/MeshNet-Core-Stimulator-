@@ -15,8 +15,10 @@
  * Wire format (binary, no JSON, no base64):
  *   POST /send?to=ID&from=ID   body = one core packet           -> 200 ok | 404 offline | 413 too big
  *   GET  /inbox/ID?wait=20&zone=Z   long poll                   -> 200 body = [len u16 BE][packet]...  (maybe empty)
+ *   GET  /events/ID?zone=Z          SSE live packet stream      -> text/event-stream (event: packet, data: base64)
  *   POST /presence?node=ID&zone=Z                               -> 200
- *   GET  /where?ids=1,2,3                                       -> text lines "id online(0/1) zone"
+ *   GET  /where?ids=1,2,3 (or ?zone=Z)                          -> text lines "id online(0/1) zone"
+ *   GET  /stats                                                 -> JSON zone-sharded telemetry
  * Optional auth: set MESH_BRIDGE_TOKEN; clients send it in the X-Mesh-Token header.
  */
 module.exports = function createMeshBridge(options) {
@@ -28,6 +30,8 @@ module.exports = function createMeshBridge(options) {
   const presence = new Map();   // id -> { seen, zone }
   const queues = new Map();     // id -> [ { t, buf } ]
   const waiters = new Map();    // id -> { res, timer }
+  const sseClients = new Map(); // id -> Set<res>
+  let relayedCount = 0;
 
   function online(id) {
     const p = presence.get(id);
@@ -59,6 +63,15 @@ module.exports = function createMeshBridge(options) {
     res.setHeader('Content-Type', type || 'application/octet-stream');
     res.setHeader('Cache-Control', 'no-store');
     res.end(body === undefined ? '' : body);
+  }
+  function pushSse(id, buf) {
+    const set = sseClients.get(id);
+    if (!set || set.size === 0) return false;
+    const line = 'event: packet\ndata: ' + buf.toString('base64') + '\n\n';
+    for (const r of set) {
+      try { r.write(line); } catch (e) { set.delete(r); }
+    }
+    return set.size > 0;
   }
   function release(id, list) {
     const w = waiters.get(id);
@@ -98,7 +111,8 @@ module.exports = function createMeshBridge(options) {
     let u;
     try { u = new URL(req.url, 'http://x'); } catch (e) { return reply(res, 400, 'bad url', 'text/plain'); }
     const path = u.pathname.replace(/\/+$/, '');
-    const known = path === '/send' || path === '/presence' || path === '/where' || path.startsWith('/inbox/');
+    const known = path === '/send' || path === '/presence' || path === '/where' || path === '/stats'
+      || path.startsWith('/inbox/') || path.startsWith('/events/');
     if (!known) return next ? next() : reply(res, 404, 'not found', 'text/plain');
     if (opt.token && req.headers['x-mesh-token'] !== opt.token) return reply(res, 401, 'unauthorized', 'text/plain');
 
@@ -116,6 +130,27 @@ module.exports = function createMeshBridge(options) {
       req.on('close', () => { const w = waiters.get(id); if (w && w.res === res) { clearTimeout(w.timer); waiters.delete(id); } });
       return undefined;
     }
+    if (req.method === 'GET' && path.startsWith('/events/')) {
+      const id = id32(path.slice(8));
+      if (!id) return reply(res, 400, 'bad id', 'text/plain');
+      touch(id, parseInt(u.searchParams.get('zone'), 10));
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.write(': connected\n\n');
+      let set = sseClients.get(id);
+      if (!set) { set = new Set(); sseClients.set(id, set); }
+      set.add(res);
+      for (const pkt of takeQueue(id)) pushSse(id, pkt);
+      const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); touch(id, -1); } catch (e) {} }, 20000);
+      req.on('close', () => {
+        clearInterval(keepAlive);
+        set.delete(res);
+        if (set.size === 0) sseClients.delete(id);
+      });
+      return undefined;
+    }
     if (req.method === 'POST' && path === '/send') {
       const to = id32(u.searchParams.get('to'));
       const from = id32(u.searchParams.get('from'));
@@ -124,7 +159,8 @@ module.exports = function createMeshBridge(options) {
         if (!buf) return reply(res, 413, 'too big', 'text/plain');
         if (from) touch(from);
         if (!online(to)) return reply(res, 404, 'offline', 'text/plain');
-        if (!release(to, [buf])) {
+        relayedCount++;
+        if (!release(to, [buf]) && !pushSse(to, buf)) {
           const q = queues.get(to) || [];
           if (q.length >= opt.queueMax) q.shift();
           q.push({ t: Date.now(), buf });
@@ -142,6 +178,17 @@ module.exports = function createMeshBridge(options) {
     }
     if (req.method === 'GET' && path === '/where') {
       const lines = [];
+      const zoneFilter = u.searchParams.get('zone');
+      if (zoneFilter !== null && zoneFilter !== '') {
+        const z = parseInt(zoneFilter, 10);
+        for (const [id, p] of presence) {
+          if (p.zone === z && online(id)) {
+            lines.push(id + ' 1 ' + p.zone);
+            if (lines.length >= 200) break;
+          }
+        }
+        return reply(res, 200, lines.join('\n'), 'text/plain');
+      }
       for (const s of String(u.searchParams.get('ids') || '').split(',').slice(0, 200)) {
         const id = id32(s);
         if (!id) continue;
@@ -149,6 +196,27 @@ module.exports = function createMeshBridge(options) {
         lines.push(id + ' ' + (online(id) ? 1 : 0) + ' ' + (p ? p.zone : -1));
       }
       return reply(res, 200, lines.join('\n'), 'text/plain');
+    }
+    if (req.method === 'GET' && path === '/stats') {
+      const zones = {};
+      let onlineCount = 0;
+      for (const [id, p] of presence) {
+        if (!online(id)) continue;
+        onlineCount++;
+        const zk = String(p.zone);
+        zones[zk] = (zones[zk] || 0) + 1;
+      }
+      let queuedPackets = 0;
+      for (const q of queues.values()) queuedPackets += q.length;
+      return reply(res, 200, JSON.stringify({
+        onlineNodes: onlineCount,
+        totalTrackedNodes: presence.size,
+        activeWaiters: waiters.size,
+        activeSse: sseClients.size,
+        queuedPackets: queuedPackets,
+        relayedPackets: relayedCount,
+        zones: zones,
+      }), 'application/json');
     }
     return reply(res, 405, 'method not allowed', 'text/plain');
   };
